@@ -258,7 +258,7 @@ class ExcelProcessor:
                     p = self.calc.parse_grade(ws.cell(row=row_idx, column=cols["exam_col"]).value)
                     if p["status"] == "absent": is_absent = True
                     elif p["status"] == "exempt": is_exempt = True
-                    elif p["status"] == "valid": exam_val = p["value"])
+                    elif p["status"] == "valid": exam_val = p["value"]
 
                 if is_absent or is_exempt:
                     txt = "Absent" if lang != "ar" else "غائب"
