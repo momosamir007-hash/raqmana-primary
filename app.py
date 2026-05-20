@@ -26,7 +26,7 @@ DEFAULT_CONFIG = {
         "physical_ed": {"keywords": ["بدنية", "رياضية", "sport", "eps", "ت.بدنية"], "lang": "ar"},
     },
     "COL_PATTERNS": {
-        "base_headers": ["الاسم", "اللقب", "الرقم", "رقم التعريف", "التلميذ", "المعدل"], # ← جديد: لكشف بداية الجدول
+        "base_headers": ["الاسم", "اللقب", "الرقم", "رقم التعريف", "التلميذ", "المعدل"], 
         "ar_expr": ["تعبير", "تواصل شفوي", "شفوي", "التعبير"],
         "ar_read": ["قراءة", "محفوظات", "القراءة"],
         "ar_write": ["كتابة", "إملاء", "الكتابة"],
@@ -100,6 +100,16 @@ class GradeCalculator:
         if ignore_zero: valid = [v for v in valid if v != 0.0]
         return sum(valid) / len(valid) if valid else None
 
+    # دالة جلب الملاحظات التي سقطت سهواً
+    def get_remark(self, grade: float, max_grade: float, lang: str) -> str:
+        if max_grade <= 0: return ""
+        grade = max(0.0, min(float(grade), max_grade))
+        ratio = grade / max_grade
+        table = self.remarks.get(lang, self.remarks["ar"])
+        for threshold, text in table:
+            if ratio >= threshold: return text
+        return table[-1][1]
+
 class ExcelProcessor:
     def __init__(self, config, user_settings, logger):
         self.config = config
@@ -122,7 +132,7 @@ class ExcelProcessor:
                 if TextHelper.normalize(kw) in norm: return stype, info["lang"]
         return "other", "ar"
 
-    def find_column(self, ws, keywords, max_row=20): # نبحث في أول 20 صف
+    def find_column(self, ws, keywords, max_row=20): 
         norm_kws = [TextHelper.normalize(kw) for kw in keywords]
         for row in ws.iter_rows(min_row=1, max_row=min(max_row, ws.max_row or 1)):
             for cell in row:
@@ -136,7 +146,6 @@ class ExcelProcessor:
         numeric_cols = []
         if not ws.max_row or ws.max_row <= header_row: return numeric_cols
         
-        # نفحص الصفوف التي تلي صف العناوين مباشرة
         check_rows = range(header_row + 1, min(header_row + 5, ws.max_row + 1))
         for col in range(1, (ws.max_column or 1) + 1):
             if col in exclude_cols: continue
@@ -150,19 +159,16 @@ class ExcelProcessor:
     def map_columns(self, ws, subject_type, default_max):
         res = {"found": False, "remark_col": None, "exam_col": None, "eval_cols": [], "header_row": 1, "exam_header": "", "method": "none", "notes": ""}
         
-        # 1. الاكتشاف الذكي لبداية الجدول (معالجة ملفات الرقمنة)
         base_info = self.find_column(ws, self.config["COL_PATTERNS"]["base_headers"])
         if base_info:
-            res["header_row"] = base_info["row"] # وجدنا الصف 6 أو 7
+            res["header_row"] = base_info["row"] 
 
-        # 2. البحث عن عمود الاختبار
         exam_info = self.find_column(ws, self.config["COL_PATTERNS"]["exam"])
         if exam_info:
             res["exam_col"] = exam_info["col"]
             res["exam_header"] = exam_info["header"]
             res["header_row"] = max(res["header_row"], exam_info["row"])
 
-        # 3. البحث عن التقويمات
         eval_groups = []
         if subject_type == "arabic": eval_groups = ["ar_expr", "ar_read", "ar_write"]
         elif subject_type == "math": eval_groups = ["ma_num", "ma_meas", "ma_data", "ma_geo"]
@@ -177,27 +183,24 @@ class ExcelProcessor:
                 res["eval_cols"].append(info["col"])
                 res["header_row"] = max(res["header_row"], info["row"])
 
-        # 4. معالجة عمود الملاحظات
         rem_info = self.find_column(ws, self.config["COL_PATTERNS"]["remark"])
         if rem_info:
             res["remark_col"] = rem_info["col"]
             res["header_row"] = max(res["header_row"], rem_info["row"])
         else:
-            # إذا لم نجده، ننشئه في صف العناوين الصحيح!
             res["remark_col"] = (ws.max_column or 0) + 1
             header_cell = ws.cell(row=res["header_row"], column=res["remark_col"])
             header_cell.value = "ملاحظة الأستاذ"
             header_cell.font = Font(bold=True)
             res["notes"] = f"إنشاء عمود ملاحظات (الصف {res['header_row']})"
 
-        # 5. الفحص الاحتياطي الشامل للمواد التي ليس لها أعمدة بمسميات واضحة (كالبدنية والتشكيلية)
         num_cols = self.find_fallback_numeric_cols(ws, res["header_row"], {res["remark_col"]}, default_max)
         if num_cols and not res["eval_cols"] and res["exam_col"] is None:
             if len(num_cols) > 1:
                 res["exam_col"] = num_cols[-1]
                 res["eval_cols"] = num_cols[:-1]
             else:
-                res["eval_cols"] = num_cols # نعتبر العمود الوحيد كتقويم لحساب المعدل
+                res["eval_cols"] = num_cols 
             res["method"] = "fallback"
 
         res["found"] = bool(num_cols or res["eval_cols"] or res["exam_col"] is not None)
@@ -354,7 +357,7 @@ def run_ui():
     </style>
     """, unsafe_allow_html=True)
 
-    st.title("🎓 أداة حجز الملاحظات الذكية — الطور الابتدائي (V4.3)")
+    st.title("🎓 أداة حجز الملاحظات الذكية — الطور الابتدائي")
     st.markdown("نظام أوتوماتيكي متوافق 100% مع **ملفات الرقمنة الجزائرية**. يحسب المعدلات، يدوّن الملاحظات، ويولّد إحصائيات دقيقة.")
 
     with st.sidebar:
