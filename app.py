@@ -9,7 +9,6 @@ import pandas as pd
 import openpyxl
 from openpyxl.styles import PatternFill, Font, Alignment
 from openpyxl.chart import BarChart, Reference
-from streamlit.web import cli as stcli
 
 # ==========================================
 # 1. التكوينات والإعدادات (Configuration)
@@ -27,6 +26,7 @@ DEFAULT_CONFIG = {
         "physical_ed": {"keywords": ["بدنية", "رياضية", "sport", "eps", "ت.بدنية"], "lang": "ar"},
     },
     "COL_PATTERNS": {
+        "base_headers": ["الاسم", "اللقب", "الرقم", "رقم التعريف", "التلميذ", "المعدل"], # ← جديد: لكشف بداية الجدول
         "ar_expr": ["تعبير", "تواصل شفوي", "شفوي", "التعبير"],
         "ar_read": ["قراءة", "محفوظات", "القراءة"],
         "ar_write": ["كتابة", "إملاء", "الكتابة"],
@@ -37,9 +37,9 @@ DEFAULT_CONFIG = {
         "fl_expr": ["expression", "orale", "شفهي", "تواصل"],
         "fl_read": ["lecture", "compréhension", "قراءة"],
         "fl_prod": ["production", "écrite", "إنتاج", "كتابي"],
-        "plastic_eval": ["تقويم", "إنجاز", "عمل", "مشاركة"],
-        "music_eval": ["نشيد", "أداء", "استماع", "إيقاع"],
-        "sport_eval": ["أداء", "نشاط", "مهارة"],
+        "plastic_eval": ["تقويم", "إنجاز", "عمل", "مشاركة", "علامة"],
+        "music_eval": ["نشيد", "أداء", "استماع", "إيقاع", "علامة"],
+        "sport_eval": ["أداء", "نشاط", "مهارة", "علامة"],
         "exam": ["اختبار", "فرض", "امتحان", "exam", "test"],
         "remark": ["ملاحظة", "تقدير", "remarque", "appreciation", "تعليق"]
     },
@@ -60,7 +60,6 @@ DEFAULT_CONFIG = {
 # ==========================================
 
 class TextHelper:
-    """فئة مساعدة لمعالجة النصوص وتوحيدها للبحث"""
     @staticmethod
     def normalize(text: str) -> str:
         if not text: return ""
@@ -69,9 +68,7 @@ class TextHelper:
         text = "".join(c for c in text if unicodedata.category(c) != "Mn")
         return re.sub(r"\s+", " ", text)
 
-
 class GradeCalculator:
-    """فئة مسؤولة عن العمليات الحسابية ومنطق التقييم"""
     def __init__(self, config):
         self.remarks = config["REMARKS"]
 
@@ -103,9 +100,7 @@ class GradeCalculator:
         if ignore_zero: valid = [v for v in valid if v != 0.0]
         return sum(valid) / len(valid) if valid else None
 
-
 class ExcelProcessor:
-    """المحرك الأساسي لمعالجة ملف الإكسيل وتطبيق القواعد"""
     def __init__(self, config, user_settings, logger):
         self.config = config
         self.settings = user_settings
@@ -127,7 +122,7 @@ class ExcelProcessor:
                 if TextHelper.normalize(kw) in norm: return stype, info["lang"]
         return "other", "ar"
 
-    def find_column(self, ws, keywords, max_row=80):
+    def find_column(self, ws, keywords, max_row=20): # نبحث في أول 20 صف
         norm_kws = [TextHelper.normalize(kw) for kw in keywords]
         for row in ws.iter_rows(min_row=1, max_row=min(max_row, ws.max_row or 1)):
             for cell in row:
@@ -141,7 +136,8 @@ class ExcelProcessor:
         numeric_cols = []
         if not ws.max_row or ws.max_row <= header_row: return numeric_cols
         
-        check_rows = range(header_row + 1, min(header_row + 6, ws.max_row + 1))
+        # نفحص الصفوف التي تلي صف العناوين مباشرة
+        check_rows = range(header_row + 1, min(header_row + 5, ws.max_row + 1))
         for col in range(1, (ws.max_column or 1) + 1):
             if col in exclude_cols: continue
             for r in check_rows:
@@ -154,20 +150,19 @@ class ExcelProcessor:
     def map_columns(self, ws, subject_type, default_max):
         res = {"found": False, "remark_col": None, "exam_col": None, "eval_cols": [], "header_row": 1, "exam_header": "", "method": "none", "notes": ""}
         
-        rem_info = self.find_column(ws, self.config["COL_PATTERNS"]["remark"])
-        if not rem_info:
-            res["notes"] = "لم يُكتشف عمود الملاحظات"
-            return res
-            
-        res["remark_col"] = rem_info["col"]
-        res["header_row"] = rem_info["row"]
+        # 1. الاكتشاف الذكي لبداية الجدول (معالجة ملفات الرقمنة)
+        base_info = self.find_column(ws, self.config["COL_PATTERNS"]["base_headers"])
+        if base_info:
+            res["header_row"] = base_info["row"] # وجدنا الصف 6 أو 7
 
+        # 2. البحث عن عمود الاختبار
         exam_info = self.find_column(ws, self.config["COL_PATTERNS"]["exam"])
         if exam_info:
             res["exam_col"] = exam_info["col"]
             res["exam_header"] = exam_info["header"]
             res["header_row"] = max(res["header_row"], exam_info["row"])
 
+        # 3. البحث عن التقويمات
         eval_groups = []
         if subject_type == "arabic": eval_groups = ["ar_expr", "ar_read", "ar_write"]
         elif subject_type == "math": eval_groups = ["ma_num", "ma_meas", "ma_data", "ma_geo"]
@@ -182,20 +177,30 @@ class ExcelProcessor:
                 res["eval_cols"].append(info["col"])
                 res["header_row"] = max(res["header_row"], info["row"])
 
-        needs_fallback = (subject_type in ("plastic_arts", "music", "physical_ed", "other") 
-                          and not res["eval_cols"] and res["exam_col"] is None)
-        
-        if needs_fallback:
-            num_cols = self.find_fallback_numeric_cols(ws, res["header_row"], {res["remark_col"]}, default_max)
-            if num_cols:
-                res["eval_cols"] = num_cols
-                res["method"] = "fallback"
-            else:
-                res["notes"] = "لم تُكتشف أي أعمدة رقمية"
+        # 4. معالجة عمود الملاحظات
+        rem_info = self.find_column(ws, self.config["COL_PATTERNS"]["remark"])
+        if rem_info:
+            res["remark_col"] = rem_info["col"]
+            res["header_row"] = max(res["header_row"], rem_info["row"])
         else:
-            res["method"] = "keyword"
+            # إذا لم نجده، ننشئه في صف العناوين الصحيح!
+            res["remark_col"] = (ws.max_column or 0) + 1
+            header_cell = ws.cell(row=res["header_row"], column=res["remark_col"])
+            header_cell.value = "ملاحظة الأستاذ"
+            header_cell.font = Font(bold=True)
+            res["notes"] = f"إنشاء عمود ملاحظات (الصف {res['header_row']})"
 
-        res["found"] = bool(res["eval_cols"] or res["exam_col"] is not None)
+        # 5. الفحص الاحتياطي الشامل للمواد التي ليس لها أعمدة بمسميات واضحة (كالبدنية والتشكيلية)
+        num_cols = self.find_fallback_numeric_cols(ws, res["header_row"], {res["remark_col"]}, default_max)
+        if num_cols and not res["eval_cols"] and res["exam_col"] is None:
+            if len(num_cols) > 1:
+                res["exam_col"] = num_cols[-1]
+                res["eval_cols"] = num_cols[:-1]
+            else:
+                res["eval_cols"] = num_cols # نعتبر العمود الوحيد كتقويم لحساب المعدل
+            res["method"] = "fallback"
+
+        res["found"] = bool(num_cols or res["eval_cols"] or res["exam_col"] is not None)
         return res
 
     def compute_final_grade(self, eval_vals, exam_val, subject_type, method):
@@ -207,7 +212,6 @@ class ExcelProcessor:
             if exam_val is not None: return exam_val
             
         elif subject_type in ("plastic_arts", "music", "physical_ed"):
-            if method == "fallback": return eval_avg
             if eval_avg is not None and exam_val is not None: return (eval_avg + exam_val) / 2
             if eval_avg is not None: return eval_avg
             if exam_val is not None: return exam_val
@@ -224,11 +228,13 @@ class ExcelProcessor:
 
         for sheet_name in wb.sheetnames:
             ws = wb[sheet_name]
+            if ws.max_row <= 1: continue 
+            
             subj, lang = self.detect_subject(sheet_name)
             cols = self.map_columns(ws, subj, self.settings["max_grade"])
             
             if not cols["found"]:
-                self.logger.warning(f"تخطي الورقة '{sheet_name}': {cols.get('notes', 'أعمدة مفقودة')}")
+                self.logger.warning(f"تخطي الورقة '{sheet_name}': لم يُعثر على أعمدة النقاط.")
                 continue
 
             sheet_max = self.calc.detect_max_grade(cols["exam_header"], self.settings["max_grade"])
@@ -290,17 +296,9 @@ class ExcelProcessor:
                     "نسبة النجاح %": round((sum(1 for g in sheet_grades if g >= (sheet_max / 2)) / len(sheet_grades)) * 100, 1)
                 })
 
-            formula_desc = "غير محدد"
-            n_eval = len(cols["eval_cols"])
-            if subj == "other": formula_desc = "نقطة الاختبار مباشرة"
-            elif cols["method"] == "fallback": formula_desc = f"معدل {n_eval} عمود رقمي (تلقائي)"
-            elif n_eval > 0 and cols["exam_col"]: formula_desc = f"معدل {n_eval} تقويم + اختبار ÷ 2"
-            elif n_eval > 0: formula_desc = f"معدل {n_eval} تقويم"
-            elif cols["exam_col"]: formula_desc = "نقطة الاختبار"
-
             report.append({
                 "الورقة": sheet_name, 
-                "القاعدة الحسابية": formula_desc, 
+                "الحالة": f"مُعالج ({cols.get('notes', 'تلقائي')})", 
                 "ملاحظات أضيفت": added, 
                 "تم تخطيها": skipped
             })
@@ -336,7 +334,7 @@ class ExcelProcessor:
         ws.add_chart(chart, "H2")
 
 # ==========================================
-# 5. واجهة المستخدم (Streamlit App)
+# 3. واجهة المستخدم (Streamlit App)
 # ==========================================
 
 def run_ui():
@@ -344,15 +342,20 @@ def run_ui():
 
     st.markdown("""
     <style>
-        .stApp { direction: rtl; text-align: right; font-family: 'Tajawal', sans-serif;}
-        .css-1d391kg { direction: rtl; } 
+        * { font-family: 'Tajawal', sans-serif; }
+        h1, h2, h3, h4, h5, h6, p, label, .stMarkdown, .stText, .stAlert { 
+            text-align: right !important; 
+            direction: rtl !important; 
+        }
+        [data-testid="stSidebar"] { direction: ltr !important; }
+        [data-testid="stSidebar"] * { direction: rtl !important; text-align: right !important; }
         .stButton>button { width: 100%; border-radius: 5px; font-weight: bold; background-color: #27AE60; color: white;}
         .stButton>button:hover { background-color: #1A6B3C;}
     </style>
     """, unsafe_allow_html=True)
 
-    st.title("🎓 أداة حجز الملاحظات الذكية — الطور الابتدائي (V4.1)")
-    st.markdown("نظام أوتوماتيكي متكامل لحساب المعدلات، تدوين الملاحظات الذكية، واستخراج إحصائيات القسم من ملفات الإكسيل.")
+    st.title("🎓 أداة حجز الملاحظات الذكية — الطور الابتدائي (V4.3)")
+    st.markdown("نظام أوتوماتيكي متوافق 100% مع **ملفات الرقمنة الجزائرية**. يحسب المعدلات، يدوّن الملاحظات، ويولّد إحصائيات دقيقة.")
 
     with st.sidebar:
         st.header("⚙️ إعدادات المعالجة")
@@ -367,7 +370,7 @@ def run_ui():
         "overwrite_mode": overwrite_mode, "ignore_zero": ignore_zero, "apply_style": apply_style
     }
 
-    uploaded_file = st.file_uploader("📂 اسحب وأفلت ملف الإكسيل هنا (.xlsx)", type=["xlsx"])
+    uploaded_file = st.file_uploader("📂 اسحب وأفلت ملف الإكسيل (الرقمنة) هنا (.xlsx)", type=["xlsx"])
 
     if uploaded_file is not None:
         if st.button("🚀 بدء المعالجة الذكية"):
@@ -379,47 +382,42 @@ def run_ui():
             ch.setFormatter(logging.Formatter('⚠️ %(message)s'))
             if not logger.handlers: logger.addHandler(ch)
 
-            with st.spinner('جاري التحليل المعمق للملف وتطبيق القواعد...'):
+            with st.spinner('جاري قراءة وتصحيح ملف الرقمنة...'):
                 processor = ExcelProcessor(DEFAULT_CONFIG, user_settings, logger)
                 try:
                     processed_bytes, report_data = processor.process_workbook(uploaded_file)
                     
-                    st.success("✅ اكتملت المعالجة بنجاح! تم تطبيق المعادلات وإنشاء ورقة الإحصائيات.")
-                    
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.subheader("📋 تقرير المعالجة المفصل")
-                        if report_data:
+                    if processor.stats:
+                        st.success("✅ اكتملت المعالجة بنجاح! تم تطبيق المعادلات وإنشاء ورقة الإحصائيات.")
+                        
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.subheader("📋 تقرير المعالجة المفصل")
                             st.dataframe(pd.DataFrame(report_data), use_container_width=True)
-                        else:
-                            st.warning("لم يتم معالجة أي أوراق.")
 
-                    with col2:
-                        st.subheader("📊 لوحة قيادة القسم (مختصر)")
-                        if processor.stats:
+                        with col2:
+                            st.subheader("📊 لوحة قيادة القسم (مختصر)")
                             st.dataframe(pd.DataFrame(processor.stats), use_container_width=True)
-                        else:
-                            st.info("لا توجد بيانات كافية لإنشاء الإحصائيات.")
+
+                        st.download_button(
+                            label="📥 تحميل الملف الجاهز للرقمنة",
+                            data=processed_bytes,
+                            file_name=uploaded_file.name.replace(".xlsx", "_جاهز_للرقمنة.xlsx"),
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        )
+                    else:
+                        st.error("❌ تم قراءة الملف بنجاح، ولكن لم نجد نقاطاً للتلاميذ. تأكد من أن الملف ليس فارغاً تماماً.")
 
                     logs = log_stream.getvalue()
                     if logs:
                         st.warning("ملاحظات النظام:")
                         st.code(logs)
 
-                    st.download_button(
-                        label="📥 تحميل الملف الجاهز للرقمنة",
-                        data=processed_bytes,
-                        file_name=uploaded_file.name.replace(".xlsx", "_جاهز_للرقمنة.xlsx"),
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
-
                 except Exception as e:
                     st.error(f"❌ حدث خطأ غير متوقع: {str(e)}")
 
-# نقطة الدخول (تدعم التشغيل المباشر من Pydroid 3)
 if __name__ == '__main__':
     from streamlit import runtime
-    # نتحقق بالطريقة الرسمية المدعومة إذا كان Streamlit يعمل
     if runtime.exists():
         run_ui()
     else:
@@ -427,4 +425,3 @@ if __name__ == '__main__':
         from streamlit.web import cli as stcli
         sys.argv = ["streamlit", "run", __file__]
         sys.exit(stcli.main())
-
