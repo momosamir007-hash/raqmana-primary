@@ -418,8 +418,13 @@ def run_ui():
 
 # نقطة الدخول (تدعم التشغيل المباشر من Pydroid 3)
 if __name__ == '__main__':
-    if st._is_running_with_streamlit:
+    from streamlit import runtime
+    # نتحقق بالطريقة الرسمية المدعومة إذا كان Streamlit يعمل
+    if runtime.exists():
         run_ui()
     else:
+        import sys
+        from streamlit.web import cli as stcli
         sys.argv = ["streamlit", "run", __file__]
         sys.exit(stcli.main())
+
