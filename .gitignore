@@ -1,0 +1,21 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+.env
+
+# Streamlit specific
+.streamlit/
+
+# Excel files (Protect user data)
+*.xlsx
+*.xls
+!template.xlsx
+
+# OS specific files
+.DS_Store
+Thumbs.db
